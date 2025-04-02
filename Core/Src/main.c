@@ -30,7 +30,17 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef struct {
+    float Kp, Ki, Kd;
+    float prevError, integral;
+    float output, maxOutput, minOutput;
+} PIDController;
 
+typedef struct {
+    float Kp, Ki;
+    float prevError, integral;
+    float output, maxOutput, minOutput;
+} PIController;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -86,7 +96,8 @@ const uint32_t N = 600;	// period, ticks per electrical cycle (60 hz / prescale 
 // to change frequency, keep ARR constant and vary prescale
 const uint32_t phase_shift = N / 3;
 
-const uint32_t freqset_min = 200;
+// TODO: WARNING: I've repurposed freqset to adjust Rr_Lr!!!!!!!!
+const uint32_t freqset_min = 1;
 const uint32_t freqset_max = 1000;
 uint32_t freqset = freqset_min;
 
@@ -97,6 +108,20 @@ int speed_rpm = 0;
 int i1_milliamps = 0;
 int i2_milliamps = 0;
 int i3_milliamps = 0;
+
+// IFOC variables
+const float POWER_RAIL = 100.0f;
+float Rr_Lr = 0.7 / 0.003; // ESTIMATE!!
+float theta_r = 0;
+float theta_s = 0;
+float theta_m = 0;
+float i_d =  0;
+float i_q = 0;
+volatile float i_d_des = 0;
+volatile float i_q_des = 0;
+PIDController speed_pid = { .Kp = 1.0f, .Ki = 0.0f, .Kd = 0.0f, .maxOutput = 100.0f, .minOutput = -100.0f };
+PIController vd_pi = { .Kp = 10.0f, .Ki = 0.0f, .maxOutput = 50.0f, .minOutput = -50.0f };
+PIController vq_pi = { .Kp = 10.0f, .Ki = 0.0f, .maxOutput = 50.0f, .minOutput = -50.0f };
 
 /* USER CODE END PV */
 
@@ -115,7 +140,8 @@ static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 //int approx_duty_cycle(int x);
-
+float PID_Compute(PIDController *pid, float setpoint, float feedback, float dt);
+float PI_Compute(PIController *pi, float setpoint, float feedback, float dt);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -143,17 +169,17 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 	// Initialize the sine wave values
-	int DUTY_CYCLE_VALUES[N];	// At 20kHz PWM, ARR is 5400
+//	int DUTY_CYCLE_VALUES[N];	// At 20kHz PWM, ARR is 5400
 //	for (int i = 0; i < N/2; i++) {
 //		int dc = approx_duty_cycle(i);
 //		DUTY_CYCLE_VALUES[i] = dc;
 //		DUTY_CYCLE_VALUES[i + N/2] = -dc;
 //		SEGGER_RTT_printf(0, "%u\r\n", dc);
 //	}
-	float pi = 3.1415926;
-	for (int i = 0; i < N; i++) {
-		DUTY_CYCLE_VALUES[i] = ARR/2 + (int) ((ARR-1)*sin(2*pi*i / N)/2);
-	}
+//	float pi = 3.1415926;
+//	for (int i = 0; i < N; i++) {
+//		DUTY_CYCLE_VALUES[i] = ARR/2 + (int) ((ARR-1)*sin(2*pi*i / N)/2);
+//	}
 
   /* USER CODE END 1 */
 
@@ -207,7 +233,7 @@ int main(void)
 
 	while (1)
 	{
-		uint32_t time_N = TIM4->CNT;
+//		uint32_t time_N = TIM4->CNT;
 		int i1_raw = AD_RES_BUFFER[0];
 		int i2_raw = AD_RES_BUFFER[1];
 		int i3_raw = AD_RES_BUFFER[2];
@@ -216,9 +242,9 @@ int main(void)
 		i2_milliamps = ((i2_raw - 2048) * volts_to_milliamps)/4095;
 		i3_milliamps = ((i3_raw - 2048) * volts_to_milliamps)/4095;
 
-		TIM1->CCR1 = DUTY_CYCLE_VALUES[time_N];
-		TIM1->CCR2 = DUTY_CYCLE_VALUES[(time_N + phase_shift) % N];
-		TIM1->CCR3 = DUTY_CYCLE_VALUES[(time_N + 2*phase_shift) % N];
+//		TIM1->CCR1 = DUTY_CYCLE_VALUES[time_N];
+//		TIM1->CCR2 = DUTY_CYCLE_VALUES[(time_N + phase_shift) % N];
+//		TIM1->CCR3 = DUTY_CYCLE_VALUES[(time_N + 2*phase_shift) % N];
 
 
 		// Write to channel 0, see in J-Link RTT Viewer or telnet client
@@ -227,7 +253,9 @@ int main(void)
 			HAL_ADC_PollForConversion(&hadc2, 1);
 			uint32_t ad2_res = HAL_ADC_GetValue(&hadc2);	// 0 to 255; linmap to speed 30->120
 			freqset = freqset_min + (ad2_res * (freqset_max - freqset_min)) / 255;
-			TIM4->PSC = 108000000 / (N * freqset);
+			Rr_Lr = freqset;
+
+//			TIM4->PSC = 108000000 / (N * freqset);
 
 			// encoder pulses -> speed
 //			int tim3cnt = TIM3->CNT;
@@ -235,23 +263,177 @@ int main(void)
 			short encoder_pulses = TIM3->CNT;
 			TIM3->CNT = 0;
 			int speed_loop_time_micros = TIM2->CNT;
-			TIM2->CNT = 0;
 			// Conversion const: 1000000 us/s * 60 s/min / 1200 pulses per rev = 50000
 			speed_rpm = (encoder_pulses * 50000) / (speed_loop_time_micros + 1);	// will overflow at > 42948 pulses or 35.79 rev/s or 2147 rpm
 
+
+			// TODO: REMOVE LATER, for finding Rr_Lr we set d and q currents equal (amps)
+			i_d_des = 1.0f;
+			i_q_des = 1.0f;
+
+			// TODO: Redundant conversion for now (to amps)
+			float i_a = (float)i1_milliamps / 1000.0f;
+			float i_b = (float)i2_milliamps / 1000.0f;
+			float i_c = (float)i3_milliamps / 1000.0f;
+			float dt = (float)speed_loop_time_micros / 1000000.0f;
+
+			// Convert to encoder angle (1200 pulses per rev)
+			// Then angle * R = 50mm = distance
+			// Finally distance / (2 * pitch length) * 2pi = rotor "mechanical angle"
+			theta_m += (float)encoder_pulses / 1200 * 2*M_PI * 50 / 67 * 2*M_PI;
+			if (theta_m >= 2.0f * M_PI) {
+				theta_m -= 2.0f * M_PI;
+			} else if (theta_m < 0) {
+				theta_m += 2.0f * M_PI;
+			}
+
+			// https://ww1.microchip.com/downloads/aemdocuments/documents/fpga/ProductDocuments/UserGuides/sf2_mc_park_invpark_clarke_invclarke_transforms_ug.pdf
+			// Clarke transform (a, b, c to alpha, beta)
+			float i_alpha = 2.0f/3.0f * i_a - 1.0f/3.0f * (i_b - i_c);
+			float i_beta = 2.0f/sqrtf(3) * (i_b - i_c);
+
+			// Park transform (d is flux, q is thrust)
+			i_d = i_alpha * cosf(theta_r) + i_beta * sinf(theta_r);
+			i_q = i_beta * cosf(theta_r) - i_alpha * sinf(theta_r);
+
+			// Then, update rotor flux angle (and keep everything [0, 2pi))
+			theta_s += (Rr_Lr * i_q / i_d) * dt;
+			if (theta_s >= 2.0f * M_PI) {
+				theta_s -= 2.0f * M_PI;
+			} else if (theta_s < 0) {
+				theta_s += 2.0f * M_PI;
+			}
+			theta_r = theta_m + theta_s;
+			if (theta_r >= 2.0f * M_PI) {
+				theta_r -= 2.0f * M_PI;
+			} else if (theta_r < 0) {
+				theta_r += 2.0f * M_PI;
+			}
+
+			// Run PI loop to get v_d and v_q
+			float v_d = PI_Compute(&vd_pi, i_d_des, i_d, dt);
+			float v_q = PI_Compute(&vq_pi, i_q_des, i_q, dt);
+
+			// Get theta_v
+			float theta_v = atan2f(v_q, v_d);
+			if (theta_v < 0) {
+				theta_v += 2.0f * M_PI;  // Convert to [0, 2π)
+			}
+
+			// Then add theta_v and theta_r to get the angle of the voltage phasor
+			float theta = theta_v + theta_r;
+			float v_magnitude = sqrtf(v_q * v_q + v_d * v_d);
+
+
+			// NOW, INPUT INTO SVPWM ALGORITHM:
+
+			float duty_cycle_a = 0;
+			float duty_cycle_b = 0;
+			float duty_cycle_c = 0;
+
+			// Not quite inverse Park transform...
+			float v_alpha = v_magnitude/POWER_RAIL * cosf(theta);
+			float v_beta = v_magnitude/POWER_RAIL * sinf(theta);
+
+			// Get region (labelled 1-6 CCW from x axis)
+			int region;
+			if (v_beta > 0) {
+				if (v_alpha > 0) {
+					if (v_beta > v_alpha * sqrtf(3)) { // Just use basic trig to find if it is in region 1
+						region = 2;
+					}
+					else {
+						region = 1; // Covers half of region 2
+					}
+				}
+				else  {
+					if (v_beta > -v_alpha * sqrtf(3)) {
+						region = 2; // The other half
+					}
+					else {
+						region = 3;
+					}
+				}
+			}
+			else {
+				if (v_alpha > 0) {
+					if (-v_beta > v_alpha * sqrt(3)) {
+						region = 5;
+					}
+					else {
+						region = 6;
+					}
+				}
+				else {
+					if (-v_beta > -v_alpha * sqrt(3)) {
+						region = 5;
+					}
+					else {
+						region = 4;
+					}
+				}
+			}
+
+			// T1 and T2 are times in the two states, and T0 is time in zero vector
+			// https://e2e.ti.com/cfs-file/__key/communityserver-discussions-components-files/171/SpaceVectorPulseWidthModulationTechnique.pdf
+			float T2 = 3.0/M_PI * v_magnitude/POWER_RAIL * sinf(theta);
+			float T1 = 3.0*sqrtf(3)/(2*M_PI) * v_magnitude/POWER_RAIL * cosf(theta) - T2/2;
+			float T0 = 1 - (T1 + T2);
+
+			switch (region) {
+				case 1: {
+					duty_cycle_a = T1 + T2 + T0/2;
+					duty_cycle_b = T2 + T0/2;
+					duty_cycle_c = T0/2;
+				} break;
+				case 2: {
+					duty_cycle_a = T1 + T0/2;
+					duty_cycle_b = T1 + T2 + T0/2;
+					duty_cycle_c = T0/2;
+				} break;
+				case 3: {
+					duty_cycle_a = T0/2;
+					duty_cycle_b = T1 + T2 + T0/2;
+					duty_cycle_c = T2 + T0/2;
+				} break;
+				case 4: {
+					duty_cycle_a = T0/2;
+					duty_cycle_b = T1 + T0/2;
+					duty_cycle_c = T1 + T2 + T0/2;
+				} break;
+				case 5: {
+					duty_cycle_a = T2 + T0/2;
+					duty_cycle_b = T0/2;
+					duty_cycle_c = T1 + T2 + T0/2;
+				} break;
+				case 6: {
+					duty_cycle_a = T1 + T2 + T0/2;
+					duty_cycle_b = T0/2;
+					duty_cycle_c = T1 + T0/2;
+				} break;
+			}
+
+			// Set duty cycle
+			TIM1->CCR1 = (uint32_t) ((float)ARR * duty_cycle_a);
+			TIM1->CCR2 = (uint32_t) ((float)ARR * duty_cycle_b);
+			TIM1->CCR3 = (uint32_t) ((float)ARR * duty_cycle_c);
+
+
+			TIM2->CNT = 0;
 			// SEGGER_RTT_WriteString(0, "Hello world!\r\n");
-//			SEGGER_RTT_printf(0, "Oversample %u, Hz %u, rpm %d \r\n", count/20000, freqset, speed_rpm);
-//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
-//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
-//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_14);
+	//			SEGGER_RTT_printf(0, "Oversample %u, Hz %u, rpm %d \r\n", count/20000, freqset, speed_rpm);
+	//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+	//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
+	//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_14);
 			count = 0;
 		}
 		count++;
+
+	}
     /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
-	}
-  /* USER CODE END 3 */
+	/* USER CODE BEGIN 3 */
+	/* USER CODE END 3 */
 }
 
 /**
@@ -861,7 +1043,34 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+float PID_Compute(PIDController *pid, float setpoint, float feedback, float dt) {
+    float error = setpoint - feedback;
+    pid->integral += error * dt;
+    float derivative = (error - pid->prevError) / dt;
 
+    pid->output = (pid->Kp * error) + (pid->Ki * pid->integral) + (pid->Kd * derivative);
+
+    // Saturation
+    if (pid->output > pid->maxOutput) pid->output = pid->maxOutput;
+    if (pid->output < pid->minOutput) pid->output = pid->minOutput;
+
+    pid->prevError = error;
+    return pid->output;
+}
+
+float PI_Compute(PIController *pi, float setpoint, float feedback, float dt) {
+    float error = setpoint - feedback;
+    pi->integral += error * dt;
+
+    pi->output = (pi->Kp * error) + (pi->Ki * pi->integral);
+
+    // Saturation
+    if (pi->output > pi->maxOutput) pi->output = pi->maxOutput;
+    if (pi->output < pi->minOutput) pi->output = pi->minOutput;
+
+    pi->prevError = error;
+    return pi->output;
+}
 /* USER CODE END 4 */
 
 /**
