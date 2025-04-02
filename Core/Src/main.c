@@ -71,8 +71,8 @@ ETH_HandleTypeDef heth;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
-TIM_HandleTypeDef htim8;
 
 UART_HandleTypeDef huart3;
 
@@ -86,11 +86,17 @@ const uint32_t N = 600;	// period, ticks per electrical cycle (60 hz / prescale 
 // to change frequency, keep ARR constant and vary prescale
 const uint32_t phase_shift = N / 3;
 
-const uint32_t freqset_min = 30;
-const uint32_t freqset_max = 120;
+const uint32_t freqset_min = 200;
+const uint32_t freqset_max = 1000;
 uint32_t freqset = freqset_min;
 
+const float volts_to_amps = 24.39;
+const int volts_to_milliamps = (int) (volts_to_amps * 1000);
+
 int speed_rpm = 0;
+int i1_milliamps = 0;
+int i2_milliamps = 0;
+int i3_milliamps = 0;
 
 /* USER CODE END PV */
 
@@ -101,12 +107,12 @@ static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_ETH_Init(void);
 static void MX_TIM1_Init(void);
-static void MX_TIM8_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_ADC2_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 //int approx_duty_cycle(int x);
 
@@ -173,12 +179,12 @@ int main(void)
   MX_ADC1_Init();
   MX_ETH_Init();
   MX_TIM1_Init();
-  MX_TIM8_Init();
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   MX_TIM4_Init();
-  MX_ADC2_Init(); // Reads single dial from PA0, controlling either frequency (open loop) or speed (closed loop) setpoint
+  MX_ADC2_Init();
   MX_TIM2_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
@@ -188,10 +194,9 @@ int main(void)
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
 	HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
 	HAL_ADC_Start_DMA(&hadc1, AD_RES_BUFFER, 3);
-	HAL_TIM_Encoder_Start(&htim8, TIM_CHANNEL_ALL);
+	HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
 	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
 	HAL_TIM_Base_Start(&htim2);
-
 
   /* USER CODE END 2 */
 
@@ -203,19 +208,21 @@ int main(void)
 	while (1)
 	{
 		uint32_t time_N = TIM4->CNT;
+		int i1_raw = AD_RES_BUFFER[0];
+		int i2_raw = AD_RES_BUFFER[1];
+		int i3_raw = AD_RES_BUFFER[2];
+
+		i1_milliamps = ((i1_raw - 2048) * volts_to_milliamps)/4095;
+		i2_milliamps = ((i2_raw - 2048) * volts_to_milliamps)/4095;
+		i3_milliamps = ((i3_raw - 2048) * volts_to_milliamps)/4095;
 
 		TIM1->CCR1 = DUTY_CYCLE_VALUES[time_N];
 		TIM1->CCR2 = DUTY_CYCLE_VALUES[(time_N + phase_shift) % N];
 		TIM1->CCR3 = DUTY_CYCLE_VALUES[(time_N + 2*phase_shift) % N];
-		// TIM1->CCR2 = DUTY_CYCLE_VALUES[(time_N + phase_shift) % N];
-		// TIM1->CCR3 = DUTY_CYCLE_VALUES[(time_N + 2 * phase_shift) % N];
-		//	  TIM1->CCR1 = 5000;
-		//	  TIM1->CCR2 = 3000;
-		//	  TIM1->CCR3 = 1000;
-		// uint32_t encoder_pulses = TIM8->CNT;
+
 
 		// Write to channel 0, see in J-Link RTT Viewer or telnet client
-		if (TIM2->CNT > 250000) {	// microseconds
+		if (TIM2->CNT > 10000) {	// microseconds
 			HAL_ADC_Start(&hadc2);
 			HAL_ADC_PollForConversion(&hadc2, 1);
 			uint32_t ad2_res = HAL_ADC_GetValue(&hadc2);	// 0 to 255; linmap to speed 30->120
@@ -223,18 +230,20 @@ int main(void)
 			TIM4->PSC = 108000000 / (N * freqset);
 
 			// encoder pulses -> speed
-			short encoder_pulses = TIM8->CNT;	// hopefully underflow is recognized as negative integer by 2s cpl
-			TIM8->CNT = 0;
-			uint32_t speed_loop_time_micros = TIM2->CNT;
+//			int tim3cnt = TIM3->CNT;
+//			int encoder_pulses = (tim3cnt < 32768) ? tim3cnt : -(65536-tim3cnt);
+			short encoder_pulses = TIM3->CNT;
+			TIM3->CNT = 0;
+			int speed_loop_time_micros = TIM2->CNT;
 			TIM2->CNT = 0;
 			// Conversion const: 1000000 us/s * 60 s/min / 1200 pulses per rev = 50000
 			speed_rpm = (encoder_pulses * 50000) / (speed_loop_time_micros + 1);	// will overflow at > 42948 pulses or 35.79 rev/s or 2147 rpm
 
 			// SEGGER_RTT_WriteString(0, "Hello world!\r\n");
-			SEGGER_RTT_printf(0, "Oversample %u, Hz %u, rpm %u \r\n", count/20000, freqset, speed_rpm);
-			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
-			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
-			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_14);
+//			SEGGER_RTT_printf(0, "Oversample %u, Hz %u, rpm %d \r\n", count/20000, freqset, speed_rpm);
+//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
+//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_14);
 			count = 0;
 		}
 		count++;
@@ -542,7 +551,7 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
   sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
   sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-  sBreakDeadTimeConfig.DeadTime = 107;
+  sBreakDeadTimeConfig.DeadTime = 149;
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
   sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
   sBreakDeadTimeConfig.BreakFilter = 0;
@@ -607,6 +616,55 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
   * @brief TIM4 Initialization Function
   * @param None
   * @retval None
@@ -662,57 +720,6 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 2 */
   HAL_TIM_MspPostInit(&htim4);
-
-}
-
-/**
-  * @brief TIM8 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM8_Init(void)
-{
-
-  /* USER CODE BEGIN TIM8_Init 0 */
-
-  /* USER CODE END TIM8_Init 0 */
-
-  TIM_Encoder_InitTypeDef sConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-
-  /* USER CODE BEGIN TIM8_Init 1 */
-
-  /* USER CODE END TIM8_Init 1 */
-  htim8.Instance = TIM8;
-  htim8.Init.Prescaler = 0;
-  htim8.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim8.Init.Period = 65535;
-  htim8.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim8.Init.RepetitionCounter = 0;
-  htim8.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
-  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC1Filter = 0;
-  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC2Filter = 0;
-  if (HAL_TIM_Encoder_Init(&htim8, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim8, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM8_Init 2 */
-
-  /* USER CODE END TIM8_Init 2 */
 
 }
 

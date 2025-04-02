@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<JScopeProject>
+    <FileVersion major="1" minor="1" />
+    <Project>
+        <Configuration>
+            <JLink>
+                <Options Connection="1" IsRTTSession="0" IsRTTWithTimeStamp="0" SamplingPeriod="50" SerialNo="0" JTAG_IRPre="0" JTAG_DRPre="0" IP="" TargetDevice="STM32F767ZI" TargetInterface="SWD" InterfaceSpeed="4000" />
+            </JLink>
+            <ElfFile Name="C:\Users\alexa\Documents\STM32CubeProjects\stm32f767zi_motor_control\STM32CubeIDE\Debug\stm32f767zi_motor_control.elf" />
+            <Scope>
+                <Options TimeResolutionUs="1000000" />
+            </Scope>
+            <Trigger>
+                <Options Level="0" Symbol="freqset" On="0" Auto="0" Rise="0" Fall="0" />
+            </Trigger>
+        </Configuration>
+        <Windows>
+            <Graph Show="1" />
+            <Watch Show="1" />
+        </Windows>
+        <SelectedSymbols>
+            <Symbol>
+                <Options Name="freqset" Address="0x20000004" Type="long unsigned int" TypeID="8" Size="4" GraphColorRed="255" GraphColorGreen="0" GraphColorBlue="0" YMinSampled="200" YMaxSampled="460" YAvgSampled="319.016" Offset="4" ShowInGraph="1" YOffset="0" IsAutoConfig="0" YResolution="200" MaxValue="-2147483648" File="C:/Users/alexa/Documents/STM32CubeProjects/stm32f767zi_motor_control/Core/Src/main.c" DrawStyle="0" NameWithParents=".freqset" />
+            </Symbol>
+            <Symbol>
+                <Options Name="i1_milliamps" Address="0x200009F0" Type="int" TypeID="12" Size="4" GraphColorRed="0" GraphColorGreen="0" GraphColorBlue="255" YMinSampled="-12197" YMaxSampled="12192" YAvgSampled="-143.454" Offset="8" ShowInGraph="1" YOffset="0" IsAutoConfig="0" YResolution="5000" MaxValue="2147483647" File="C:/Users/alexa/Documents/STM32CubeProjects/stm32f767zi_motor_control/Core/Src/main.c" DrawStyle="0" NameWithParents=".i1_milliamps" />
+            </Symbol>
+            <Symbol>
+                <Options Name="i2_milliamps" Address="0x200009F4" Type="int" TypeID="12" Size="4" GraphColorRed="0" GraphColorGreen="255" GraphColorBlue="0" YMinSampled="-12197" YMaxSampled="12192" YAvgSampled="-144.077" Offset="12" ShowInGraph="1" YOffset="0" IsAutoConfig="0" YResolution="5000" MaxValue="2147483647" File="C:/Users/alexa/Documents/STM32CubeProjects/stm32f767zi_motor_control/Core/Src/main.c" DrawStyle="0" NameWithParents=".i2_milliamps" />
+            </Symbol>
+            <Symbol>
+                <Options Name="i3_milliamps" Address="0x200009F8" Type="int" TypeID="12" Size="4" GraphColorRed="255" GraphColorGreen="255" GraphColorBlue="0" YMinSampled="-12197" YMaxSampled="12192" YAvgSampled="-138.385" Offset="16" ShowInGraph="1" YOffset="0" IsAutoConfig="0" YResolution="5000" MaxValue="2147483647" File="C:/Users/alexa/Documents/STM32CubeProjects/stm32f767zi_motor_control/Core/Src/main.c" DrawStyle="0" NameWithParents=".i3_milliamps" />
+            </Symbol>
+            <Symbol>
+                <Options Name="speed_rpm" Address="0x200009EC" Type="int" TypeID="12" Size="4" GraphColorRed="0" GraphColorGreen="255" GraphColorBlue="255" YMinSampled="-4202" YMaxSampled="0" YAvgSampled="-2751.84" Offset="20" ShowInGraph="1" YOffset="0" IsAutoConfig="0" YResolution="2000" MaxValue="2147483647" File="C:/Users/alexa/Documents/STM32CubeProjects/stm32f767zi_motor_control/Core/Src/main.c" DrawStyle="0" NameWithParents=".speed_rpm" />
+            </Symbol>
+        </SelectedSymbols>
+    </Project>
+</JScopeProject>
