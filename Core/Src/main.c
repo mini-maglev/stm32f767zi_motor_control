@@ -64,11 +64,13 @@ ETH_DMADescTypeDef DMATxDscrTab[ETH_TX_DESC_CNT] __attribute__((section(".TxDecr
 ETH_TxPacketConfig TxConfig;
 
 ADC_HandleTypeDef hadc1;
+ADC_HandleTypeDef hadc2;
 DMA_HandleTypeDef hdma_adc1;
 
 ETH_HandleTypeDef heth;
 
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim8;
 
@@ -78,14 +80,17 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 uint32_t AD_RES_BUFFER[3];	// circular buffer, 3 in-use ADC channels
-float gain1 = 5400.0 / 4095;
-float gain2 = 5400.0 / 4095;
-float gain3 = 5400.0 / 4095;
 
 uint32_t ARR = 5400;
 const uint32_t N = 600;	// period, ticks per electrical cycle (60 hz / prescale 3000)
 // to change frequency, keep ARR constant and vary prescale
 const uint32_t phase_shift = N / 3;
+
+const uint32_t freqset_min = 30;
+const uint32_t freqset_max = 120;
+uint32_t freqset = freqset_min;
+
+int speed_rpm = 0;
 
 /* USER CODE END PV */
 
@@ -100,8 +105,10 @@ static void MX_TIM8_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_ADC2_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
-int approx_duty_cycle(int x);
+//int approx_duty_cycle(int x);
 
 /* USER CODE END PFP */
 
@@ -111,13 +118,13 @@ int approx_duty_cycle(int x);
  * x between 0 and N/2, where N is the values in a full period
  * return between 0 and ARR-1
  */
-int approx_duty_cycle(int x) {
-	long numerator = (32*N - 64*x)*x;
-	numerator = numerator * (ARR-1) / 3;
-	int denominator = 5*N*N - 8*N*x + 16*x*x;
-	int sine = (int) (numerator / denominator);
-	return ARR / 2 + sine;
-}
+//int approx_duty_cycle(int x) {
+//	long numerator = (32*N - 64*x)*x;
+//	numerator = numerator * (ARR-1) / 3;
+//	int denominator = 5*N*N - 8*N*x + 16*x*x;
+//	int sine = (int) (numerator / denominator);
+//	return ARR / 2 + sine;
+//}
 
 /* USER CODE END 0 */
 
@@ -170,6 +177,8 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   MX_TIM4_Init();
+  MX_ADC2_Init(); // Reads single dial from PA0, controlling either frequency (open loop) or speed (closed loop) setpoint
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
@@ -181,6 +190,7 @@ int main(void)
 	HAL_ADC_Start_DMA(&hadc1, AD_RES_BUFFER, 3);
 	HAL_TIM_Encoder_Start(&htim8, TIM_CHANNEL_ALL);
 	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
+	HAL_TIM_Base_Start(&htim2);
 
 
   /* USER CODE END 2 */
@@ -188,12 +198,10 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 	uint32_t count = 0;
+	TIM2->CNT = 0;
+
 	while (1)
 	{
-//		uint32_t amplitude_scale = AD_RES_BUFFER[0];	// 0 to 4095
-//		uint32_t freq_scale = AD_RES_BUFFER[1]; // 0 to 4095
-
-		// Disregard for now, just run at full duty cycle and 60 Hz (external voltage control)
 		uint32_t time_N = TIM4->CNT;
 
 		TIM1->CCR1 = DUTY_CYCLE_VALUES[time_N];
@@ -207,12 +215,27 @@ int main(void)
 		// uint32_t encoder_pulses = TIM8->CNT;
 
 		// Write to channel 0, see in J-Link RTT Viewer or telnet client
-		if (count % 20000 == 0) {
+		if (TIM2->CNT > 250000) {	// microseconds
+			HAL_ADC_Start(&hadc2);
+			HAL_ADC_PollForConversion(&hadc2, 1);
+			uint32_t ad2_res = HAL_ADC_GetValue(&hadc2);	// 0 to 255; linmap to speed 30->120
+			freqset = freqset_min + (ad2_res * (freqset_max - freqset_min)) / 255;
+			TIM4->PSC = 108000000 / (N * freqset);
+
+			// encoder pulses -> speed
+			short encoder_pulses = TIM8->CNT;	// hopefully underflow is recognized as negative integer by 2s cpl
+			TIM8->CNT = 0;
+			uint32_t speed_loop_time_micros = TIM2->CNT;
+			TIM2->CNT = 0;
+			// Conversion const: 1000000 us/s * 60 s/min / 1200 pulses per rev = 50000
+			speed_rpm = (encoder_pulses * 50000) / (speed_loop_time_micros + 1);	// will overflow at > 42948 pulses or 35.79 rev/s or 2147 rpm
+
 			// SEGGER_RTT_WriteString(0, "Hello world!\r\n");
-			// SEGGER_RTT_printf(0, "%u, %u, %u \r\n", count/10, time_N, DUTY_CYCLE_VALUES[time_N]);
+			SEGGER_RTT_printf(0, "Oversample %u, Hz %u, rpm %u \r\n", count/20000, freqset, speed_rpm);
 			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
 			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
 			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_14);
+			count = 0;
 		}
 		count++;
     /* USER CODE END WHILE */
@@ -350,6 +373,58 @@ static void MX_ADC1_Init(void)
 }
 
 /**
+  * @brief ADC2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC2_Init(void)
+{
+
+  /* USER CODE BEGIN ADC2_Init 0 */
+
+  /* USER CODE END ADC2_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC2_Init 1 */
+
+  /* USER CODE END ADC2_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc2.Instance = ADC2;
+  hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc2.Init.Resolution = ADC_RESOLUTION_8B;
+  hadc2.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc2.Init.ContinuousConvMode = DISABLE;
+  hadc2.Init.DiscontinuousConvMode = DISABLE;
+  hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc2.Init.NbrOfConversion = 1;
+  hadc2.Init.DMAContinuousRequests = DISABLE;
+  hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC2_Init 2 */
+
+  /* USER CODE END ADC2_Init 2 */
+
+}
+
+/**
   * @brief ETH Initialization Function
   * @param None
   * @retval None
@@ -467,7 +542,7 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
   sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
   sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-  sBreakDeadTimeConfig.DeadTime = 159;
+  sBreakDeadTimeConfig.DeadTime = 107;
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
   sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
   sBreakDeadTimeConfig.BreakFilter = 0;
@@ -483,6 +558,51 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 2 */
   HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 107;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4294967295;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
