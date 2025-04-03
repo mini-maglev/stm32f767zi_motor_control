@@ -253,7 +253,10 @@ int main(void)
 
 
 		// Write to channel 0, see in J-Link RTT Viewer or telnet client
-		if (TIM2->CNT > 100) {	// microseconds
+		if (TIM2->CNT > 50) {	// microseconds
+			TIM2->CNT = 0;
+
+			// TODO: take this out of the control loop to a slower loop  or limit execution. Also the ADC reading is super noisy
 			HAL_ADC_Start(&hadc2);
 			HAL_ADC_PollForConversion(&hadc2, 1);
 			uint32_t ad2_res = HAL_ADC_GetValue(&hadc2);	// 0 to 255; linmap to speed 30->120
@@ -274,6 +277,8 @@ int main(void)
 
 
 			// TODO: REMOVE LATER, for finding Rr_Lr we set d and q currents equal (amps)
+			// TODO: Also, we probably need a better force measuring setup than the spring or use the big ps since not enough force
+			// TODO: The adc current readings may also be noisy
 			i_d_des = 1.0f;
 			i_q_des = 1.0f;
 
@@ -286,6 +291,7 @@ int main(void)
 			// Convert to encoder angle (2400 pulses per rev)
 			// Then angle * R = 50mm = distance
 			// Finally distance / (2 * pitch length) * 2pi = rotor "mechanical angle"
+			// TODO: check that this is right (maybe by finding synchronous speed??
 			theta_m = (double)encoder_pulses / 2400.0 * 2.0*M_PI * 50.0 / 67.0 * 2.0*M_PI;
 			theta_m = fmod(theta_m, 2.0 * M_PI);
 			if (theta_m < 0) theta_m += 2.0 * M_PI;
@@ -300,12 +306,12 @@ int main(void)
 			i_q = i_beta * cosf(theta_r) - i_alpha * sinf(theta_r);
 
 			// Then, update rotor flux angle (and keep everything [0, 2pi))
+			// TODO: maybe need to multiply Rr_Lr by a few orders of magnitude
 			theta_s += (Rr_Lr * i_q / (i_d + 0.000001)) * dt;
 			theta_s = fmod(theta_s, 2.0 * M_PI);
 			if (theta_s < 0) theta_s += 2.0 * M_PI;
 
-			theta_r = fmod(theta_m + theta_s, 2.0 * M_PI);
-			if (theta_r < 0) theta_r += 2.0 * M_PI;
+			theta_r = theta_m + theta_s;
 
 			// Run PI loop to get v_d and v_q
 			v_d = PI_Compute(&vd_pi, i_d_des, i_d, dt);
@@ -319,10 +325,10 @@ int main(void)
 
 			// Then add theta_v and theta_r to get the angle of the voltage phasor
 			theta = theta_v + theta_r;
+			theta = fmod(theta, 2.0 * M_PI);
+			if (theta < 0) theta += 2.0 * M_PI;
 			float v_magnitude = sqrtf(v_q * v_q + v_d * v_d);
-//			theta += M_PI*2 * 100.0f/10000.0f;
-//			theta = fmod(theta, 2.0 * M_PI);
-//			if (theta < 0) theta += 2.0 * M_PI;
+//			theta += M_PI*2 * 100.0f/20000.0f;
 //			v_magnitude = 50.0f;
 
 
@@ -419,8 +425,6 @@ int main(void)
 			TIM1->CCR2 = (uint32_t) ((float)ARR * duty_cycle_b);
 			TIM1->CCR3 = (uint32_t) ((float)ARR * duty_cycle_c);
 
-
-			TIM2->CNT = 0;
 			// SEGGER_RTT_WriteString(0, "Hello world!\r\n");
 	//			SEGGER_RTT_printf(0, "Oversample %u, Hz %u, rpm %d \r\n", count/20000, freqset, speed_rpm);
 	//			HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
