@@ -117,11 +117,16 @@ float theta_s = 0;
 float theta_m = 0;
 float i_d =  0;
 float i_q = 0;
+float v_d = 0;
+float v_q = 0;
 volatile float i_d_des = 0;
 volatile float i_q_des = 0;
 PIDController speed_pid = { .Kp = 1.0f, .Ki = 0.0f, .Kd = 0.0f, .maxOutput = 100.0f, .minOutput = -100.0f };
-PIController vd_pi = { .Kp = 10.0f, .Ki = 0.0f, .maxOutput = 50.0f, .minOutput = -50.0f };
-PIController vq_pi = { .Kp = 10.0f, .Ki = 0.0f, .maxOutput = 50.0f, .minOutput = -50.0f };
+PIController vd_pi = { .Kp = 50.0f, .Ki = 0.0f, .maxOutput = 50.0f, .minOutput = -50.0f };
+PIController vq_pi = { .Kp = 50.0f, .Ki = 0.0f, .maxOutput = 50.0f, .minOutput = -50.0f };
+int16_t encoder_pulses = 0;
+int16_t prev_encoder_pulses = 0;
+float theta = 0;
 
 /* USER CODE END PV */
 
@@ -248,7 +253,7 @@ int main(void)
 
 
 		// Write to channel 0, see in J-Link RTT Viewer or telnet client
-		if (TIM2->CNT > 10000) {	// microseconds
+		if (TIM2->CNT > 100) {	// microseconds
 			HAL_ADC_Start(&hadc2);
 			HAL_ADC_PollForConversion(&hadc2, 1);
 			uint32_t ad2_res = HAL_ADC_GetValue(&hadc2);	// 0 to 255; linmap to speed 30->120
@@ -260,8 +265,9 @@ int main(void)
 			// encoder pulses -> speed
 //			int tim3cnt = TIM3->CNT;
 //			int encoder_pulses = (tim3cnt < 32768) ? tim3cnt : -(65536-tim3cnt);
-			short encoder_pulses = TIM3->CNT;
-			TIM3->CNT = 0;
+			encoder_pulses = TIM3->CNT;
+//			prev_encoder_pulses = encoder_pulses;
+//			TIM3->CNT = 0;
 			int speed_loop_time_micros = TIM2->CNT;
 			// Conversion const: 1000000 us/s * 60 s/min / 1200 pulses per rev = 50000
 			speed_rpm = (encoder_pulses * 50000) / (speed_loop_time_micros + 1);	// will overflow at > 42948 pulses or 35.79 rev/s or 2147 rpm
@@ -277,15 +283,12 @@ int main(void)
 			float i_c = (float)i3_milliamps / 1000.0f;
 			float dt = (float)speed_loop_time_micros / 1000000.0f;
 
-			// Convert to encoder angle (1200 pulses per rev)
+			// Convert to encoder angle (2400 pulses per rev)
 			// Then angle * R = 50mm = distance
 			// Finally distance / (2 * pitch length) * 2pi = rotor "mechanical angle"
-			theta_m += (float)encoder_pulses / 1200 * 2*M_PI * 50 / 67 * 2*M_PI;
-			if (theta_m >= 2.0f * M_PI) {
-				theta_m -= 2.0f * M_PI;
-			} else if (theta_m < 0) {
-				theta_m += 2.0f * M_PI;
-			}
+			theta_m = (double)encoder_pulses / 2400.0 * 2.0*M_PI * 50.0 / 67.0 * 2.0*M_PI;
+			theta_m = fmod(theta_m, 2.0 * M_PI);
+			if (theta_m < 0) theta_m += 2.0 * M_PI;
 
 			// https://ww1.microchip.com/downloads/aemdocuments/documents/fpga/ProductDocuments/UserGuides/sf2_mc_park_invpark_clarke_invclarke_transforms_ug.pdf
 			// Clarke transform (a, b, c to alpha, beta)
@@ -297,22 +300,16 @@ int main(void)
 			i_q = i_beta * cosf(theta_r) - i_alpha * sinf(theta_r);
 
 			// Then, update rotor flux angle (and keep everything [0, 2pi))
-			theta_s += (Rr_Lr * i_q / i_d) * dt;
-			if (theta_s >= 2.0f * M_PI) {
-				theta_s -= 2.0f * M_PI;
-			} else if (theta_s < 0) {
-				theta_s += 2.0f * M_PI;
-			}
-			theta_r = theta_m + theta_s;
-			if (theta_r >= 2.0f * M_PI) {
-				theta_r -= 2.0f * M_PI;
-			} else if (theta_r < 0) {
-				theta_r += 2.0f * M_PI;
-			}
+			theta_s += (Rr_Lr * i_q / (i_d + 0.000001)) * dt;
+			theta_s = fmod(theta_s, 2.0 * M_PI);
+			if (theta_s < 0) theta_s += 2.0 * M_PI;
+
+			theta_r = fmod(theta_m + theta_s, 2.0 * M_PI);
+			if (theta_r < 0) theta_r += 2.0 * M_PI;
 
 			// Run PI loop to get v_d and v_q
-			float v_d = PI_Compute(&vd_pi, i_d_des, i_d, dt);
-			float v_q = PI_Compute(&vq_pi, i_q_des, i_q, dt);
+			v_d = PI_Compute(&vd_pi, i_d_des, i_d, dt);
+			v_q = PI_Compute(&vq_pi, i_q_des, i_q, dt);
 
 			// Get theta_v
 			float theta_v = atan2f(v_q, v_d);
@@ -321,11 +318,15 @@ int main(void)
 			}
 
 			// Then add theta_v and theta_r to get the angle of the voltage phasor
-			float theta = theta_v + theta_r;
+			theta = theta_v + theta_r;
 			float v_magnitude = sqrtf(v_q * v_q + v_d * v_d);
+//			theta += M_PI*2 * 100.0f/10000.0f;
+//			theta = fmod(theta, 2.0 * M_PI);
+//			if (theta < 0) theta += 2.0 * M_PI;
+//			v_magnitude = 50.0f;
 
 
-			// NOW, INPUT INTO SVPWM ALGORITHM:
+			// NOW, INPUT INTO SVPWM ALGORITHM (the code below is tested and works):
 
 			float duty_cycle_a = 0;
 			float duty_cycle_b = 0;
@@ -432,8 +433,8 @@ int main(void)
 	}
     /* USER CODE END WHILE */
 
-	/* USER CODE BEGIN 3 */
-	/* USER CODE END 3 */
+    /* USER CODE BEGIN 3 */
+  /* USER CODE END 3 */
 }
 
 /**
@@ -820,8 +821,8 @@ static void MX_TIM3_Init(void)
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim3.Init.Period = 65535;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
